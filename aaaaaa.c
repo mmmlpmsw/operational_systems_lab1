@@ -7,6 +7,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <cmath.h>
 
 #define MALLOC_SIZE 84000000
 #define FILL_THREADS 127
@@ -16,14 +17,15 @@
 
 struct ThreadsArgs {
     int fd;
-    void * address;
+    void* address;
     size_t size;
 };
 
-struct aaaaaaaaaaaaaaaaaaa {
-    void * address;
+// для рандомной записи блоков в файл (отслеживать свободные промежут очки блоков)
+struct LinkedListNode {
+    int startBlock;
     size_t size;
-    struct aaaaaaaaaaaaaaaaaaa* next;
+    struct LinkedListNode* next;
 };
 
 void* fillMemory();
@@ -84,19 +86,40 @@ void writeRegionToFile(void* regionPtr) {
         if (i == FILE_COUNT - 1)
             writeFile(fd, (void*)((uint8_t *)regionPtr + i * FILE_SIZE), MALLOC_SIZE - FILE_SIZE * (FILE_COUNT - 1));
         else writeFile(fd, (void*)((uint8_t *)regionPtr + i * FILE_SIZE), FILE_SIZE);
-
     }
 }
 
 void writeFile(int fd, void* address, size_t size) {
     int count = size / BLOCK_SIZE + (size % BLOCK_SIZE == 0 ? 0 : 1);
-    for (int i = 0; i < count; i++) {
+    struct LinkedListNode node;
+    node.size = count;
+    node.startBlock = 0;
+    node.next = NULL;
+
+    while(1) {
+        int i = pickRandomBlock(node, count);
+        if (i == -1)
+            break;
+        lseek(fd, i * BLOCK_SIZE, SEEK_SET);
         if (i == count - 1)
             write(fd, (void*)((uint8_t *)address + i * count), size - BLOCK_SIZE * (count - 1));
         else write(fd, (void*)((uint8_t *)address + i * count), BLOCK_SIZE);
         printf("Writing %d blocks of %d\r", i, count);
         fflush(stdout);
     }
+}
+/**
+ * Выбирает случайный блок с помощью списка промежутков
+ * и возвращает номер этого блока
+ * Этот блок удаляется из списка промежутков и, если свободных блоков не осталось, он возвращает -1
+*/
+int pickRandomBlock(struct LinkedListNode * node, int count) {
+    int randomNumber = rand() % (count + 1);
+//    if (randomNumber)
+
+    node->size += 1;
+
+
 }
 
 void* fillMemoryRegionProxy(void* argsPointer) {
