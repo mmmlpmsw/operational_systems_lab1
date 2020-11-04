@@ -8,10 +8,12 @@
 #include <unistd.h>
 #include <stdint.h>
 
-#define MALLOC_SIZE 84000000
+#define MALLOC_SIZE 84000000 // 84 MB
 #define FILL_THREADS 127
-#define BLOCK_SIZE 100 // was 33
+#define ANALYZE_THREADS 13 // 143
+#define BLOCK_SIZE 3300 // 33
 #define FILE_SIZE 185000000
+#define ANALYZE_THREADS_PRIORITY -2000
 #define FILE_COUNT MALLOC_SIZE / FILE_SIZE + (MALLOC_SIZE % FILE_SIZE == 0 ? 0 : 1)
 
 struct ThreadsArgs {
@@ -22,7 +24,7 @@ struct ThreadsArgs {
 
 // для рандомной записи блоков в файл (отслеживать свободные промежут очки блоков)
 struct LinkedListNode {
-    int startBlock;
+    size_t startBlock;
     size_t size;
     struct LinkedListNode* next;
 };
@@ -33,18 +35,24 @@ void* fillMemoryRegionProxy(void*);
 void writeRegionToFile(void*);
 void writeFile(int, void*, size_t);
 int countNodes(struct LinkedListNode *);
-int pickRandomBlock(struct LinkedListNode *);
+size_t pickRandomBlock(struct LinkedListNode *);
 struct LinkedListNode * selectNodeBy(struct LinkedListNode *, int);
 void removeNode(struct LinkedListNode *, int);
+void readFiles();
+void analyzeFile(char*);
+void* fileAnalyzeProxy(void*);
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "EndlessLoop"
 int main() {
     while (1) {
         void* regionPointer = fillMemory();
         writeRegionToFile(regionPointer);
-
         free(regionPointer);
+        readFiles();
     }
 }
+#pragma clang diagnostic pop
 
 void* fillMemory() {
     void * regionPointer = malloc(MALLOC_SIZE);
@@ -86,10 +94,23 @@ void writeRegionToFile(void* regionPtr) {
             printf("Cannot create file\n");
             return;
         }
+        flock(fd, LOCK_EX);
         if (i == FILE_COUNT - 1)
             writeFile(fd, (void*)((uint8_t *)regionPtr + i * FILE_SIZE), MALLOC_SIZE - FILE_SIZE * (FILE_COUNT - 1));
         else writeFile(fd, (void*)((uint8_t *)regionPtr + i * FILE_SIZE), FILE_SIZE);
+        flock(fd, LOCK_UN);
     }
+    printf("The memory area is full\n");
+}
+
+void _traceLinkedList(struct LinkedListNode* node) {
+    printf("Nodes: ");
+    struct LinkedListNode* current = node;
+    while (current != NULL) {
+        printf("[start=%zu, size=%zu] -> ", current->startBlock, current->size);
+        current = current->next;
+    }
+    printf("\n");
 }
 
 void writeFile(int fd, void* address, size_t size) {
@@ -101,31 +122,32 @@ void writeFile(int fd, void* address, size_t size) {
     int blocksWritten = 0;
 
     while(1) {
-        int i = pickRandomBlock(&node);
+        size_t i = pickRandomBlock(&node);
         if (i == -1)
             break;
         lseek(fd, i * BLOCK_SIZE, SEEK_SET);
         if (i == count - 1)
-            write(fd, (void*)((uint8_t *)address + i * count), size - BLOCK_SIZE * (count - 1));
-        else write(fd, (void*)((uint8_t *)address + i * count), BLOCK_SIZE);
+            write(fd, (void*)((uint8_t *)address + i * BLOCK_SIZE), size - BLOCK_SIZE * (count - 1));
+        else write(fd, (void*)((uint8_t *)address + i * BLOCK_SIZE), BLOCK_SIZE);
         blocksWritten++;
         printf("Writing %d blocks of %d\r", blocksWritten, count);
         fflush(stdout);
     }
+    printf("\n");
 }
 /**
  * Выбирает случайный блок с помощью списка промежутков
  * и возвращает номер этого блока
  * Этот блок удаляется из списка промежутков и, если свободных блоков не осталось, он возвращает -1
 */
-int pickRandomBlock(struct LinkedListNode * node) {
-    int partitionCount = countNodes(node);
-    int selectedNodeIdx = rand() % partitionCount;
+size_t pickRandomBlock(struct LinkedListNode * node) {
+    size_t partitionCount = countNodes(node);
+    size_t selectedNodeIdx = rand() % partitionCount;
     struct LinkedListNode * selectedNode = selectNodeBy(node, selectedNodeIdx);
     if (partitionCount == 1 && selectedNode->size == 0)
         return -1;
-    int randomBlockNumber = rand() % selectedNode->size;
-    int result = selectedNode->startBlock + randomBlockNumber;
+    size_t randomBlockNumber = rand() % selectedNode->size;
+    size_t result = selectedNode->startBlock + randomBlockNumber;
     if (randomBlockNumber == selectedNode->size - 1) {
         selectedNode->size --;
         if (selectedNode->size == 0)
@@ -134,27 +156,15 @@ int pickRandomBlock(struct LinkedListNode * node) {
         selectedNode->startBlock ++;
         selectedNode->size --;
     } else {
-        int size = selectedNode->size - 1;
+        size_t size = selectedNode->size - 1;
         selectedNode->size = randomBlockNumber;
         struct LinkedListNode * newNode = (struct LinkedListNode *)malloc(sizeof(struct LinkedListNode));
-        newNode->startBlock = randomBlockNumber + 1;
+        newNode->startBlock = selectedNode->startBlock + randomBlockNumber + 1;
         newNode->size = size - selectedNode->size;
-        struct LinkedListNode * prevNextNode = node->next;
-        node->next = newNode;
+        struct LinkedListNode * prevNextNode = selectedNode->next;
+        selectedNode->next = newNode;
         newNode->next = prevNextNode;
     }
-//    struct LinkedListNode* current = node;
-//    int _count = 0;
-//    while (current != NULL) {
-//        if (current->size == 0) {
-//            printf("AAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
-//            printf("start %d\n", current->startBlock);
-//            printf("count %d\n", _count);
-//            exit(1);
-//        }
-//        current = current->next;
-//        _count++;
-//    }
     return result;
 }
 
@@ -197,6 +207,52 @@ int countNodes(struct LinkedListNode * node) {
     return count;
 }
 
+void readFiles() {
+    pthread_t threads[ANALYZE_THREADS];
+    for (int i = 0; i < ANALYZE_THREADS; i++) {
+        pthread_attr_t attr;
+        struct sched_param param;
+
+        pthread_attr_init(&attr);
+        pthread_attr_getschedparam(&attr, &param);
+        param.sched_priority = ANALYZE_THREADS_PRIORITY;
+        pthread_attr_setschedparam(&attr, &param);
+        pthread_create(&threads[i], &attr, fileAnalyzeProxy, NULL);
+        pthread_attr_destroy(&attr);
+    }
+}
+
+void* fileAnalyzeProxy (void* argsPointer) {
+    for (int i = 0; i < FILE_COUNT; i++) {
+        char fileName[i + 2];
+        for (int c = 0; c < i + 1; c++)
+            fileName[c] = 'a';
+        fileName[i + 1] = '\0';
+        analyzeFile(fileName);
+    }
+    return 0;
+}
+
+void analyzeFile(char* filename) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        printf("Cannot open file\n");
+        return;
+    }
+    flock(fd, LOCK_SH);
+    off_t fileSize = lseek(fd, 0, SEEK_END);
+    //back to the beginning of the file
+    lseek(fd, 0, SEEK_SET);
+    int64_t* fileData = (int64_t*) malloc(fileSize);
+    read(fd, fileData, fileSize);
+    flock(fd, LOCK_UN);
+    uint64_t min = fileData[0];
+    for (size_t i = 0; i < fileSize/sizeof(uint64_t); i++)
+        if (fileData[i] < min) min = fileData[i];
+    printf("Analysis completed. Min = %lld\n", min);
+    free(fileData);
+}
+
 void* fillMemoryRegionProxy(void* argsPointer) {
     struct ThreadsArgs* args = argsPointer;
     fillMemoryRegion(args->fd, args->address, args->size);
@@ -206,3 +262,4 @@ void* fillMemoryRegionProxy(void* argsPointer) {
 void fillMemoryRegion(int fd, void* address, size_t size) {
     read(fd, address, size);
 }
+
