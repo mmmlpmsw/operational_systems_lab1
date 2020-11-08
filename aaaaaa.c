@@ -10,10 +10,10 @@
 
 #define MALLOC_SIZE 84000000 // 84 MB
 #define FILL_THREADS 127
-#define ANALYZE_THREADS 13 // 143
-#define BLOCK_SIZE 3300 // 33
+#define ANALYZE_THREADS 143 // 143
+#define BLOCK_SIZE 330 // 33
 #define FILE_SIZE 185000000
-#define ANALYZE_THREADS_PRIORITY -2000
+#define ANALYZE_THREADS_PRIORITY 1
 #define FILE_COUNT MALLOC_SIZE / FILE_SIZE + (MALLOC_SIZE % FILE_SIZE == 0 ? 0 : 1)
 
 struct ThreadsArgs {
@@ -42,17 +42,15 @@ void readFiles();
 void analyzeFile(char*);
 void* fileAnalyzeProxy(void*);
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "EndlessLoop"
 int main() {
+
+    readFiles();
     while (1) {
         void* regionPointer = fillMemory();
         writeRegionToFile(regionPointer);
         free(regionPointer);
-        readFiles();
     }
 }
-#pragma clang diagnostic pop
 
 void* fillMemory() {
     void * regionPointer = malloc(MALLOC_SIZE);
@@ -210,25 +208,27 @@ int countNodes(struct LinkedListNode * node) {
 void readFiles() {
     pthread_t threads[ANALYZE_THREADS];
     for (int i = 0; i < ANALYZE_THREADS; i++) {
-        pthread_attr_t attr;
-        struct sched_param param;
+//        pthread_attr_t attr;
+//        struct sched_param param;
 
-        pthread_attr_init(&attr);
-        pthread_attr_getschedparam(&attr, &param);
-        param.sched_priority = ANALYZE_THREADS_PRIORITY;
-        pthread_attr_setschedparam(&attr, &param);
-        pthread_create(&threads[i], &attr, fileAnalyzeProxy, NULL);
-        pthread_attr_destroy(&attr);
+//        pthread_attr_init(&attr);
+//        pthread_attr_getschedparam(&attr, &param);
+//        param.sched_priority = ANALYZE_THREADS_PRIORITY;
+//        pthread_attr_setschedparam(&attr, &param);
+        pthread_create(&threads[i], NULL, fileAnalyzeProxy, NULL);
+//        pthread_attr_destroy(&attr);
     }
 }
 
 void* fileAnalyzeProxy (void* argsPointer) {
-    for (int i = 0; i < FILE_COUNT; i++) {
-        char fileName[i + 2];
-        for (int c = 0; c < i + 1; c++)
-            fileName[c] = 'a';
-        fileName[i + 1] = '\0';
-        analyzeFile(fileName);
+    while (1) {
+        for (int i = 0; i < FILE_COUNT; i++) {
+            char fileName[i + 2];
+            for (int c = 0; c < i + 1; c++)
+                fileName[c] = 'a';
+            fileName[i + 1] = '\0';
+            analyzeFile(fileName);
+        }
     }
     return 0;
 }
