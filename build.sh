@@ -1,0 +1,1 @@
+gcc -pthread aaaaaa.c && ./a.out
